@@ -1,0 +1,8 @@
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Always apply when explicitly listed in manifest
+echo "Jenkins Buildpack"
+exit 0
+``

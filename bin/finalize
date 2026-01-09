@@ -1,0 +1,79 @@
+
+#!/usr/bin/env bash
+# args: build_dir cache_dir deps_dir index
+set -euo pipefail
+build_dir="$1"; cache_dir="$2"; deps_dir="$3"; index="$4"
+
+echo "-----> Finalizing Jenkins buildpack"
+
+# Where we place runtime deps (JRE) so CF adds them into PATH
+dep_root="${deps_dir}/${index}"
+mkdir -p "${dep_root}/jre" "${dep_root}/bin"
+
+# Choose Adoptium Temurin JRE 21 (Jenkins requires Java 21+)
+JRE_URL="${JRE_URL:-https://github.com/adoptium/temurin21-binaries/releases/latest/download/OpenJDK21U-jre_x64_linux_hotspot.tar.gz}"
+JRE_TGZ="${cache_dir}/temurin21-jre.tar.gz"
+
+echo "-----> Downloading JRE from ${JRE_URL}"
+curl -fsSL -o "${JRE_TGZ}" "${JRE_URL}"
+tar -xzf "${JRE_TGZ}" -C "${dep_root}/jre" --strip-components=1
+
+# Download Jenkins LTS WAR
+JENKINS_URL="${JENKINS_URL:-https://get.jenkins.io/war-stable/latest/jenkins.war}"
+JENKINS_DIR="${build_dir}/jenkins"
+mkdir -p "${JENKINS_DIR}"
+echo "-----> Downloading Jenkins WAR from ${JENKINS_URL}"
+curl -fsSL -o "${JENKINS_DIR}/jenkins.war" "${JENKINS_URL}"
+
+# Optional: verify checksum if available
+if command -v sha256sum >/dev/null 2>&1; then
+  echo "-----> Attempting Jenkins WAR checksum verification"
+  if curl -fsSL -o "${cache_dir}/jenkins.war.sha256" "${JENKINS_URL}.sha256"; then
+    (cd "${JENKINS_DIR}" && sha256sum -c "${cache_dir}/jenkins.war.sha256") || {
+      echo "WAR checksum verification failed!"
+      exit 1
+    }
+    echo "-----> Jenkins WAR checksum OK"
+  else
+    echo "-----> Jenkins WAR .sha256 not found; skipping checksum verification"
+  fi
+fi
+
+# Put a runtime profile that exports JAVA_HOME and PATH so start script can find java
+mkdir -p "${build_dir}/.profile.d"
+cat > "${build_dir}/.profile.d/jenkins-java.sh" << 'EOF'
+# Pick up the JRE provided by the buildpack (first jre found under /home/vcap/deps/*/)
+for d in /home/vcap/deps/*/jre ; do
+  if [ -d "$d" ]; then
+    export JAVA_HOME="$d"
+    export PATH="$JAVA_HOME/bin:$PATH"
+    break
+  fi
+done
+EOF
+chmod +x "${build_dir}/.profile.d/jenkins-java.sh"
+
+# Start script used by 'web' process
+mkdir -p "${build_dir}/bin"
+cat > "${build_dir}/bin/start-jenkins" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# CF provides PORT; Jenkins must listen on it
+: "${PORT:=8080}"  # fallback if running locally
+# CF provides TMPDIR; we default JENKINS_HOME there unless user overrides
+: "${TMPDIR:=/tmp}"
+: "${JENKINS_HOME:=${TMPDIR}/jenkins_home}"
+
+mkdir -p "${JENKINS_HOME}"
+echo "Using JENKINS_HOME=${JENKINS_HOME}"
+echo "Starting Jenkins on port ${PORT}"
+
+# Run Jenkins; you may add --httpListenAddress=0.0.0.0 if desired
+exec java -jar "$(dirname "$0")/../jenkins/jenkins.war" \
+  --httpPort="${PORT}" \
+  --prefix=/
+EOF
+chmod +x "${build_dir}/bin/start-jenkins"
+
+echo "-----> Jenkins buildpack finalize complete"
