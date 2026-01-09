@@ -1,8 +1,0 @@
-
-#!/usr/bin/env bash
-# args: build_dir cache_dir deps_dir index
-set -euo pipefail
-build_dir="$1"; cache_dir="$2"; deps_dir="$3"; index="$4"
-
-echo "-----> Jenkins buildpack (supply): nothing to supply"
-exit 0
